@@ -1,318 +1,199 @@
 ================================================================================
-           LUMINAVIBE BACKEND - COMPLETE DOCKER GUIDE & CHEATSHEET
+     LUMINAVIBE BACKEND - POSTGRESQL & RENDER DEPLOYMENT / DOCKER GUIDE
 ================================================================================
 
 TABLE OF CONTENTS
 -----------------
-1. Prerequisites & Required Applications
-2. Overview of Required Docker Files
-3. File Contents & Explanations
-4. Basic Quickstart (Run Everything with 1 Command)
-5. Advanced / Standalone Commands (Without Docker Compose)
-6. Day-to-Day Management Commands (Logs, Restart, Shell Access)
-7. Database & Persistence Management
-8. Cleanup & Maintenance Commands
-9. Common Errors & Troubleshooting
+1. Summary of Changes (MySQL -> PostgreSQL & Render Support)
+2. Prerequisites (Local Testing vs Render Deployment)
+3. How to Run Locally with PostgreSQL in Docker
+4. Step-by-Step Guide: Deploying to Render
+5. Database Credentials & Environment Variables on Render
+6. Day-to-Day Docker & PostgreSQL Management Commands
+7. Common Issues & Troubleshooting (Render & PostgreSQL)
 
 ================================================================================
-1. PREREQUISITES & REQUIRED APPLICATIONS
+1. SUMMARY OF CHANGES (MySQL -> PostgreSQL & Render Support)
 ================================================================================
 
-Before running any Docker commands:
-- Install and launch "Docker Desktop" for Windows.
-  Ensure the engine status at the bottom-left of Docker Desktop is GREEN (Running).
-- Verify in your terminal (PowerShell or Command Prompt):
-    docker --version
-    docker compose version
+The following updates were made across the project:
 
-If you see an error like "failed to connect to the docker API" or "daemon is not
-running", start Docker Desktop from the Windows Start menu first.
+1. pom.xml
+   - Replaced "mysql-connector-j" with the official "org.postgresql:postgresql" driver.
 
+2. src/main/resources/application.properties
+   - Added: "server.port=${PORT:8080}" (Render dynamically assigns $PORT; defaults to 8080 locally).
+   - Changed datasource URL to: "${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/luminavibe}"
+   - Changed driver to: "org.postgresql.Driver"
+   - Changed dialect to: "org.hibernate.dialect.PostgreSQLDialect"
 
-================================================================================
-2. OVERVIEW OF REQUIRED DOCKER FILES
-================================================================================
+3. src/main/java/com/luminavibe/entities/Like.java
+   - Replaced MySQL-specific inline columnDefinition="ENUM('post', 'comment')" with
+     standard JPA length=20 to ensure clean Hibernate DDL table creation in PostgreSQL.
 
-To dockerize this Spring Boot + MySQL backend, 3 main files are created in the
-project root (c:\Users\aksha\OneDrive\Desktop\LuminaVibe-Backend):
+4. docker-compose.yml
+   - Replaced MySQL 8.0 with PostgreSQL 16 (postgres:16-alpine on port 5432).
+   - Configured pg_isready healthcheck to guarantee safe startup order.
 
-1. Dockerfile
-   - Builds the Spring Boot application using Java 17 and Maven.
-   - Creates a lightweight, secure production runtime container.
-
-2. docker-compose.yml
-   - Manages and links multiple containers together:
-     a) MySQL database service (port 3306)
-     b) Spring Boot backend service (port 8080)
-   - Automates network creation, health checking, and data storage.
-
-3. .dockerignore
-   - Tells Docker which folders to ignore during the build (like target/, .git/,
-     uploads/, IDE files) so builds are fast and clean.
-
-4. application.properties (Updated)
-   - Configured with environment variable placeholders (${SPRING_DATASOURCE_URL:...})
-     so it automatically connects to MySQL inside Docker while still working
-     locally when running without Docker.
+5. Dockerfile
+   - Multi-stage build remains 100% compatible with Render Docker runtime!
 
 
 ================================================================================
-3. FILE CONTENTS & EXPLANATIONS
+2. PREREQUISITES
 ================================================================================
 
---- [A] Dockerfile ---
-Uses a Multi-Stage build for minimal image size and maximum security:
+A. FOR LOCAL TESTING (Docker):
+   - Docker Desktop running on your computer.
 
-# Stage 1: Build JAR using Maven & Java 17
-FROM maven:3.9-eclipse-temurin-17 AS builder
-WORKDIR /app
-COPY pom.xml .
-RUN mvn dependency:go-offline -B || true
-COPY src ./src
-RUN mvn clean package -DskipTests
-
-# Stage 2: Minimal runtime JRE
-FROM eclipse-temurin:17-jre-jammy
-WORKDIR /app
-RUN mkdir -p uploads/posts uploads/stories
-COPY --from=builder /app/target/*.jar app.jar
-EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
-
-Why this matters:
-- The heavy Maven compiler and source files stay in Stage 1 and are discarded.
-- Only the slim JRE (Java Runtime Environment) and the compiled JAR make it to
-  the final image.
-
-
---- [B] docker-compose.yml ---
-Defines two interconnected services:
-
-services:
-  mysqldb:
-    image: mysql:8.0
-    container_name: luminavibe-mysql
-    restart: unless-stopped
-    environment:
-      MYSQL_DATABASE: luminavibe
-      MYSQL_ROOT_PASSWORD: Qwerty@1234
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root --password=Qwerty@1234 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: luminavibe-backend
-    restart: unless-stopped
-    depends_on:
-      mysqldb:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:mysql://mysqldb:3306/luminavibe?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-      SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: Qwerty@1234
-      SPRING_JPA_HIBERNATE_DDL_AUTO: update
-    volumes:
-      - ./uploads:/app/uploads
-
-volumes:
-  mysql_data:
-
-Key Features:
-- "healthcheck" on mysqldb: Spring Boot won't start until MySQL is fully initialized
-  and ready to receive database connections.
-- "mysql_data" volume: Your database tables, users, and data remain safe even if
-  the container is deleted or rebuilt.
-- "./uploads:/app/uploads": Any avatar, post, or story uploaded by users is stored
-  in your host "uploads" folder so nothing is lost.
-
-
---- [C] .dockerignore ---
-Prevents bloat during container builds:
-
-**/.git
-**/.gitignore
-**/.project
-**/.classpath
-**/.factorypath
-**/.settings
-**/.idea
-**/.vscode
-target/
-uploads/
-*.log
-.mvn/wrapper/maven-wrapper.jar
-mvnw
-mvnw.cmd
-HELP.md
+B. FOR RENDER HOSTING:
+   - A GitHub or GitLab repository with this project pushed to it.
+   - A free account on https://render.com
 
 
 ================================================================================
-4. BASIC QUICKSTART (RUN EVERYTHING WITH 1 COMMAND)
+3. HOW TO RUN LOCALLY WITH POSTGRESQL IN DOCKER
 ================================================================================
 
-Open PowerShell or CMD in the project root directory:
-cd c:\Users\aksha\OneDrive\Desktop\LuminaVibe-Backend
+Open PowerShell in the project root (c:\Users\aksha\OneDrive\Desktop\LuminaVibe-Backend):
 
-1. BUILD AND START (Background mode):
+1. Start Docker Desktop first.
+
+2. Build and start PostgreSQL + Spring Boot:
    docker compose up --build -d
 
-2. CHECK RUNNING STATUS:
+3. Check container status:
    docker compose ps
 
-3. VIEW BACKEND LOGS:
+4. Follow backend startup logs:
    docker compose logs -f backend
 
-4. VIEW MYSQL LOGS:
-   docker compose logs -f mysqldb
+5. Access PostgreSQL CLI inside container:
+   docker exec -it luminavibe-postgres psql -U postgres -d luminavibe
+   (Type '\dt' to list tables, '\q' to exit)
 
-5. TEST THE BACKEND:
-   Open your browser or Postman and hit:
-   http://localhost:8080/
-
-6. STOP EVERYTHING:
+6. Stop containers:
    docker compose down
 
 
 ================================================================================
-5. ADVANCED / STANDALONE COMMANDS (WITHOUT DOCKER COMPOSE)
+4. STEP-BY-STEP GUIDE: DEPLOYING TO RENDER
 ================================================================================
 
-If you ever want to run or test containers individually without Docker Compose:
+Step 1: Push your code to GitHub
+--------------------------------
+In your project directory, commit all changes and push:
+   git add .
+   git commit -m "Migrate to PostgreSQL and prepare for Render Docker deployment"
+   git push origin main
 
-1. Create a custom Docker bridge network:
-   docker network create luminavibe-net
 
-2. Run MySQL container manually:
-   docker run -d `
-     --name luminavibe-mysql `
-     --network luminavibe-net `
-     -e MYSQL_ROOT_PASSWORD=Qwerty@1234 `
-     -e MYSQL_DATABASE=luminavibe `
-     -p 3306:3306 `
-     -v mysql_data:/var/lib/mysql `
-     mysql:8.0
+Step 2: Create a PostgreSQL Database on Render
+----------------------------------------------
+1. Go to your Render Dashboard (https://dashboard.render.com).
+2. Click "New +" -> "PostgreSQL".
+3. Fill in:
+   - Name: luminavibe-db
+   - Database: luminavibe
+   - User: postgres (or default generated by Render)
+   - Region: Select nearest to your users (e.g., Singapore, Frankfurt, Oregon)
+   - Plan: Free
+4. Click "Create Database".
+5. Wait ~1 minute until status is "Available".
+6. Copy the "Internal Database URL" (if hosting backend on Render) OR note:
+   - Host
+   - Database
+   - User
+   - Password
+   - Port (typically 5432)
 
-3. Build the backend image manually:
-   docker build -t luminavibe-backend:latest .
 
-4. Run the backend container manually:
-   docker run -d `
-     --name luminavibe-backend `
-     --network luminavibe-net `
-     -p 8080:8080 `
-     -e SPRING_DATASOURCE_URL="jdbc:mysql://luminavibe-mysql:3306/luminavibe?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC" `
-     -e SPRING_DATASOURCE_USERNAME="root" `
-     -e SPRING_DATASOURCE_PASSWORD="Qwerty@1234" `
-     -v "${PWD}/uploads:/app/uploads" `
-     luminavibe-backend:latest
+Step 3: Create the Web Service on Render
+----------------------------------------
+1. On the Render Dashboard, click "New +" -> "Web Service".
+2. Connect your GitHub repository ("LuminaVibe-Backend").
+3. Configure the service:
+   - Name: luminavibe-backend
+   - Region: Same region as your database!
+   - Language / Runtime: Docker
+   - Instance Type: Free
+4. DO NOT change Docker Command or Docker Context unless needed (default is fine).
+
+
+Step 4: Configure Environment Variables on Render
+-------------------------------------------------
+In the "Environment Variables" section of your Web Service, add:
+
+Key: SPRING_DATASOURCE_URL
+Value: jdbc:postgresql://<RENDER_DB_HOST>:5432/<RENDER_DB_NAME>?sslmode=require
+(Note: Always prefix with "jdbc:postgresql://" and append "?sslmode=require")
+
+Key: SPRING_DATASOURCE_USERNAME
+Value: <RENDER_DB_USER>
+
+Key: SPRING_DATASOURCE_PASSWORD
+Value: <RENDER_DB_PASSWORD>
+
+Key: SPRING_JPA_HIBERNATE_DDL_AUTO
+Value: update
+
+Key: SPRING_APP_JWT_SECRET
+Value: jfdjfhjdhfjdhfjdhfdjhfjhgrjirutirirutirjifjirhitgthythyyuhtyfghhhjjjhtdgyfrthtyutyt
+
+Key: SPRING_APP_JWT_EXPIRATION_MS
+Value: 432000000
+
+
+Step 5: Deploy & Monitor
+------------------------
+1. Click "Deploy Web Service".
+2. Render will automatically:
+   - Clone your repo.
+   - Run the multi-stage Docker build.
+   - Inject the dynamic $PORT.
+   - Run your Spring Boot application connected to Render PostgreSQL.
+3. Once finished, Render gives you a live public URL:
+   https://luminavibe-backend.onrender.com
 
 
 ================================================================================
-6. DAY-TO-DAY MANAGEMENT COMMANDS
+5. DAY-TO-DAY DOCKER & POSTGRESQL COMMANDS
 ================================================================================
 
-1. REBUILD ONLY THE BACKEND (after you change Java code):
+1. REBUILD BACKEND LOCALLY:
    docker compose build backend
    docker compose up -d backend
 
-2. RESTART A SINGLE SERVICE:
-   docker compose restart backend
-   docker compose restart mysqldb
+2. VIEW DATABASE TABLES LOCALLY:
+   docker exec -it luminavibe-postgres psql -U postgres -d luminavibe -c "\dt"
 
-3. OPEN A TERMINAL / SHELL INSIDE THE BACKEND CONTAINER:
-   docker exec -it luminavibe-backend bash
-   (Or 'sh' if bash is unavailable)
+3. DUMP / BACKUP POSTGRESQL DATABASE:
+   docker exec -t luminavibe-postgres pg_dump -U postgres luminavibe > backup.sql
 
-4. INSPECT CONTAINER RESOURCE USAGE (CPU, Memory, Network I/O):
-   docker stats
+4. RESTORE POSTGRESQL DATABASE:
+   Get-Content backup.sql | docker exec -i luminavibe-postgres psql -U postgres -d luminavibe
 
-5. VIEW RECENT LOGS (Last 100 lines):
-   docker compose logs --tail=100 backend
-
-
-================================================================================
-7. DATABASE & PERSISTENCE MANAGEMENT
-================================================================================
-
-1. ACCESS MYSQL SHELL INSIDE CONTAINER:
-   docker exec -it luminavibe-mysql mysql -u root -pQwerty@1234 luminavibe
-
-   Common MySQL test queries:
-   SHOW TABLES;
-   SELECT * FROM users;
-   EXIT;
-
-2. BACK UP THE MYSQL DATABASE TO A .SQL FILE:
-   docker exec luminavibe-mysql mysqldump -u root -pQwerty@1234 luminavibe > backup.sql
-
-3. RESTORE DATABASE FROM A .SQL FILE:
-   Get-Content backup.sql | docker exec -i luminavibe-mysql mysql -u root -pQwerty@1234 luminavibe
-
-4. DELETE DATABASE VOLUME (CAUTION: Resets all database data):
+5. RESET DATABASE VOLUME (Clears local test data):
    docker compose down -v
 
 
 ================================================================================
-8. CLEANUP & MAINTENANCE COMMANDS
+6. COMMON ISSUES & TROUBLESHOOTING
 ================================================================================
 
-1. STOP AND REMOVE ALL CONTAINERS & NETWORKS:
-   docker compose down
+Issue A: Render database connection fails with "SSL off"
+Solution: Append "?sslmode=require" to the JDBC URL:
+  jdbc:postgresql://<host>:5432/<database>?sslmode=require
 
-2. REMOVE UNUSED DOCKER IMAGES (Free up disk space):
-   docker image prune -f
+Issue B: Render says "Connection refused" or cannot resolve host
+Solution: If both database and web service are on Render, use the "Internal Database URL"
+  host (e.g., dpg-xxxxx-a), and ensure both services are in the SAME Render Region.
 
-3. COMPLETE DOCKER SYSTEM PURGE (Removes stopped containers, dangling images, build cache):
-   docker system prune -a --volumes
+Issue C: Render Free Tier "Spin Down"
+Render Free web services spin down after 15 minutes of inactivity. The first request
+after spin down can take 30-50 seconds to wake up. This is normal on the Free tier.
 
-
+Issue D: Uploaded media on Render
+On Render's Free tier, the filesystem is ephemeral (resets on restart). For long-term
+production uploads, consider using an S3 bucket or Cloudinary in the future.
 ================================================================================
-9. COMMON ERRORS & TROUBLESHOOTING
-================================================================================
-
-Error A: "failed to connect to the docker API" / "pipe not found"
-Cause: Docker Desktop is not open or still starting.
-Fix: Open Docker Desktop from Windows Start menu, wait until the icon in the
-     taskbar says "Docker Desktop is running", and retry.
-
-Error B: "Port 3306 is already allocated"
-Cause: A local instance of MySQL is already running directly on your Windows host.
-Fix Option 1: Stop your local Windows MySQL service:
-  - Open Services (services.msc) -> Find "MySQL" or "MySQL80" -> Right-click -> Stop.
-Fix Option 2: Change host port in docker-compose.yml under mysqldb:
-  ports:
-    - "3307:3306"
-
-Error C: "Port 8080 is already allocated"
-Cause: Another application or an existing Spring Boot instance is running on port 8080.
-Fix: Find and kill the process:
-  netstat -ano | findstr :8080
-  taskkill /PID <PID_NUMBER> /F
-Or change backend ports in docker-compose.yml:
-  ports:
-    - "8081:8080"
-
-Error D: "Communications link failure during handshake"
-Cause: Backend tried connecting to MySQL before MySQL was finished initializing.
-Fix: Our docker-compose.yml already includes 'healthcheck' and 'condition: service_healthy'
-     to prevent this. If modifying configs, ensure depends_on waits for health check.
-
-Error E: Uploaded images/files are missing
-Cause: Volume mounting was omitted.
-Fix: Always keep the volume mapping in docker-compose.yml:
-     volumes:
-       - ./uploads:/app/uploads
-================================================================================
-
